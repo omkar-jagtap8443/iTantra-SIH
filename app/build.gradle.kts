@@ -42,23 +42,12 @@ android {
         compose = true
     }
 
-    // Force Gradle to include ALL asset files, including extension-less files like `uuid`
-    sourceSets {
-        getByName("main") {
-            assets.srcDirs("src/main/assets")
-        }
-    }
-
-    // Include extension-less files in packaging (this is the KEY line)
+    // Prevent compression of Vosk model files
     androidResources {
         noCompress += listOf("tflite", "onnx", "pb", "mdl", "fst")
     }
 
-    // Explicitly tell aapt to NOT filter assets
-    aaptOptions {
-        ignoreAssetsPattern = "!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~"
-    }
-
+    // Exclude duplicate license files pulled in by JNA/Vosk
     packaging {
         resources {
             excludes += setOf(
@@ -73,15 +62,19 @@ android {
 }
 
 dependencies {
+    // Core Android
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.lifecycle.runtime.compose)
     implementation(libs.androidx.activity.compose)
+
+    // Compose
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.ui)
     implementation(libs.androidx.ui.graphics)
     implementation(libs.androidx.ui.tooling.preview)
     implementation(libs.androidx.material3)
+    implementation(libs.androidx.material.icons.extended)
 
     // iTantra additions
     implementation(libs.kotlinx.serialization.json)
@@ -91,6 +84,7 @@ dependencies {
     implementation("com.alphacephei:vosk-android:0.3.47")
     implementation("net.java.dev.jna:jna:5.13.0@aar")
 
+    // Tests
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)

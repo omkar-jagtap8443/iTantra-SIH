@@ -1,73 +1,60 @@
-# iTantra — Offline Multilingual Voice Communication
+@"
+# ── Android / Gradle ────────────────────
+*.iml
+.gradle/
+/local.properties
+/.idea/
+.DS_Store
+/build
+/captures
+.externalNativeBuild
+.cxx
+local.properties
 
-An Android app for offline voice communication over Wi-Fi and Bluetooth. Converts speech to compact text and back — no internet, no cloud.
+# ── Kotlin / Java ───────────────────────
+*.class
+*.jar
+*.war
+*.nar
+*.ear
+*.zip
+*.tar.gz
+*.rar
 
-**SIH Problem Statement ID:** SIH26173
-**Team Name:** Team APEX
-**Team ID:** 132
+# ── ML Models — DO NOT COMMIT ───────────
+app/src/main/assets/vosk-model-*/
+app/src/main/assets/*vosk*/
+*.fst
+*.mdl
+*.ark
+*.onnx
+*.pt
+*.h5
+*.tflite
+app/src/main/assets/model/
+app/src/main/assets/models/
 
----
+# ── Build outputs ───────────────────────
+app/build/
+build/
+captures/
+output.json
 
-## Setup (5 minutes)
+# ── Keystores / Secrets ─────────────────
+*.jks
+*.keystore
+keystore.properties
+.env
 
-### 1. Clone the repository
+# ── Python (if any) ─────────────────────
+__pycache__/
+*.py[cod]
+.venv/
+venv/
 
-    git clone https://github.com/omkar-jagtap8443/iTantra-SIH.git
-
-### 2. Download Vosk language models
-
-Due to GitHub's 100 MB file size limit, the STT models are not bundled in this repo. Download them separately from https://alphacephei.com/vosk/models
-
-Required models:
-- vosk-model-small-en-in-0.4 (English, Indian accent)
-- vosk-model-small-hi-0.22 (Hindi)
-- vosk-model-small-gu-0.42 (Gujarati)
-- vosk-model-small-te-0.42 (Telugu)
-
-Direct download links:
-- https://alphacephei.com/vosk/models/vosk-model-small-en-in-0.4.zip
-- https://alphacephei.com/vosk/models/vosk-model-small-hi-0.22.zip
-- https://alphacephei.com/vosk/models/vosk-model-small-gu-0.42.zip
-- https://alphacephei.com/vosk/models/vosk-model-small-te-0.42.zip
-
-### 3. Extract the models
-
-Extract each ZIP into app/src/main/assets/ so the structure becomes:
-
-    app/src/main/assets/
-    ├── vosk-model-small-en-in-0.4/
-    ├── vosk-model-small-hi-0.22/
-    ├── vosk-model-small-gu-0.42/
-    └── vosk-model-small-te-0.42/
-
-Each model folder must contain: am/, conf/, graph/, ivector/, uuid, README
-
-### 4. Build and run
-
-1. Open the project in Android Studio Hedgehog (2023.1.1) or newer
-2. Wait for Gradle sync
-3. Connect an Android phone (API 26+)
-4. Click Run
-5. Grant Microphone + Bluetooth permissions on first launch
-
----
-
-## Features
-
-- 100% offline — no internet required
-- On-device STT (Vosk) — English, Hindi, Gujarati, Telugu
-- On-device TTS
-- TCP over Wi-Fi + Bluetooth RFCOMM
-- Auto-discovery of nearby devices
-- Save contacts, bidirectional messaging
-- Priority emergency alerts (max volume)
-- Offline cross-language translation (in development)
-
-## Requirements
-
-- Android Studio Hedgehog or newer
-- Android device: API 26 (Android 8.0) or higher
-
-## License
-
-Open source — Apache 2.0
+# ── IDE / OS ────────────────────────────
+.vscode/
+.DS_Store
+Thumbs.db
+*.log
+"@ | Out-File -Encoding utf8 .gitignore

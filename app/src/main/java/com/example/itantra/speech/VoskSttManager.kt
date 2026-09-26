@@ -43,8 +43,12 @@ class VoskSttManager {
             val recognizer = Recognizer(currentModel, 16000.0f)
             speechService = SpeechService(recognizer, 16000.0f)
 
+            // Only deliver ONE result per recognition session
+            var resultDelivered = false
+
             speechService?.startListening(object : RecognitionListener {
                 override fun onPartialResult(hypothesis: String?) {
+                    if (resultDelivered) return
                     hypothesis?.let {
                         val text = extractText(it)
                         if (text.isNotBlank()) onPartial(text)
@@ -52,25 +56,40 @@ class VoskSttManager {
                 }
 
                 override fun onResult(hypothesis: String?) {
+                    if (resultDelivered) return
                     hypothesis?.let {
                         val text = extractText(it)
-                        if (text.isNotBlank()) onResult(text)
+                        if (text.isNotBlank()) {
+                            resultDelivered = true
+                            stop()
+                            onResult(text)
+                        }
                     }
                 }
 
                 override fun onFinalResult(hypothesis: String?) {
+                    if (resultDelivered) return
                     hypothesis?.let {
                         val text = extractText(it)
-                        if (text.isNotBlank()) onResult(text)
+                        if (text.isNotBlank()) {
+                            resultDelivered = true
+                            stop()
+                            onResult(text)
+                        }
                     }
                 }
 
                 override fun onError(exception: Exception?) {
-                    Log.e(AppConstants.TAG, "Vosk error", exception)
+                    if (resultDelivered) return
+                    resultDelivered = true
+                    stop()
                     onError(exception?.message ?: "Recognition error")
                 }
 
                 override fun onTimeout() {
+                    if (resultDelivered) return
+                    resultDelivered = true
+                    stop()
                     onError("Recognition timeout")
                 }
             })
@@ -78,6 +97,30 @@ class VoskSttManager {
             Log.e(AppConstants.TAG, "Vosk start failed", e)
             onError("Start failed: ${e.message}")
         }
+    }
+
+    /**
+     * Public stop — callable from anywhere in the app.
+     */
+    fun stop() {
+        try {
+            speechService?.stop()
+            speechService?.shutdown()
+        } catch (_: Exception) {}
+        speechService = null
+    }
+
+    /**
+     * Public release — cleanly shuts down the model.
+     */
+    fun release() {
+        stop()
+        try {
+            model?.close()
+        } catch (_: Exception) {}
+        model = null
+        currentLang = null
+        isReady = false
     }
 
     private fun loadModel(
@@ -91,29 +134,12 @@ class VoskSttManager {
         val assetName = assetNameFor(lang)
         val destFolder = "vosk-${lang.name.lowercase()}"
 
-        Log.i(AppConstants.TAG, "=== loadModel: $assetName → $destFolder ===")
+        Log.i(AppConstants.TAG, "Loading Vosk model: $assetName")
 
-        // Diagnostic: list what's inside the asset folder
-        try {
-            val files = context.assets.list(assetName)
-            Log.i(AppConstants.TAG, "Assets in '$assetName': ${files?.joinToString(", ") ?: "NONE"}")
-
-            // Check if uuid exists in the asset
-            val uuidCheck = context.assets.list("$assetName/uuid")
-            Log.i(AppConstants.TAG, "uuid check: ${if (uuidCheck.isNullOrEmpty()) "MISSING" else "FOUND"}")
-
-            // Check if am exists
-            val amCheck = context.assets.list("$assetName/am")
-            Log.i(AppConstants.TAG, "am check: ${amCheck?.joinToString(", ") ?: "MISSING"}")
-        } catch (e: Exception) {
-            Log.e(AppConstants.TAG, "Asset listing failed", e)
-        }
-
-        // Check if a previously-extracted copy exists — if broken, delete it
+        // Delete stale cache so we always extract fresh
         val externalDir = context.getExternalFilesDir(null)
         val destDir = File(externalDir, destFolder)
         if (destDir.exists()) {
-            Log.i(AppConstants.TAG, "Deleting stale cache: ${destDir.absolutePath}")
             destDir.deleteRecursively()
         }
 
@@ -125,7 +151,7 @@ class VoskSttManager {
                 model = loadedModel
                 currentLang = lang
                 isReady = true
-                Log.i(AppConstants.TAG, "Vosk model loaded OK for ${lang.display}")
+                Log.i(AppConstants.TAG, "Vosk model loaded for ${lang.display}")
                 onReady()
             },
             { exception ->
@@ -133,24 +159,6 @@ class VoskSttManager {
                 onError("Model load failed: ${exception.message}")
             }
         )
-    }
-
-    fun stop() {
-        try {
-            speechService?.stop()
-            speechService?.shutdown()
-        } catch (_: Exception) {}
-        speechService = null
-    }
-
-    fun release() {
-        stop()
-        try {
-            model?.close()
-        } catch (_: Exception) {}
-        model = null
-        currentLang = null
-        isReady = false
     }
 
     private fun assetNameFor(lang: Language): String = when (lang) {

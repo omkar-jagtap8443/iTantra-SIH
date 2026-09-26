@@ -24,14 +24,16 @@ import java.io.InputStreamReader
 class BluetoothServer {
 
     private val json = Json { ignoreUnknownKeys = true }
-    private val _incoming = MutableSharedFlow<WireMessage>()
+    private val _incoming = MutableSharedFlow<WireMessage>(extraBufferCapacity = 64)
     val incoming = _incoming.asSharedFlow()
 
-    private val _status = MutableSharedFlow<String>()
+    private val _status = MutableSharedFlow<String>(extraBufferCapacity = 16)
     val status = _status.asSharedFlow()
 
     private var serverSocket: BluetoothServerSocket? = null
     private var readerThread: Thread? = null
+
+    @Volatile
     private var isRunning = false
 
     @SuppressLint("MissingPermission")
@@ -63,75 +65,82 @@ class BluetoothServer {
                 serverSocket = try {
                     adapter.listenUsingRfcommWithServiceRecord("iTantra", AppConstants.BT_UUID)
                 } catch (e: Exception) {
-                    Log.w(AppConstants.TAG, "Secure listen failed, trying insecure", e)
-                    adapter.listenUsingInsecureRfcommWithServiceRecord(
-                        "iTantra",
-                        AppConstants.BT_UUID
-                    )
+                    adapter.listenUsingInsecureRfcommWithServiceRecord("iTantra", AppConstants.BT_UUID)
                 }
-                _status.emit("Waiting for Bluetooth connection…")
-                Log.i(AppConstants.TAG, "BT server listening on UUID ${AppConstants.BT_UUID}")
+                _status.emit("Waiting for connection…")
+                Log.i(AppConstants.TAG, "BT server listening")
 
+                // Restructured loop — no break/continue inside lambda
                 while (isActive && isRunning) {
-                    val socket: BluetoothSocket = try {
-                        serverSocket?.accept() ?: break
-                    } catch (e: Exception) {
-                        Log.e(AppConstants.TAG, "accept() failed: ${e.message}")
-                        if (!isRunning) break
-                        continue
-                    }
-
-                    val peerName = try {
-                        socket.remoteDevice?.name ?: "Unknown"
-                    } catch (_: SecurityException) { "Unknown" }
-
-                    Log.i(AppConstants.TAG, "BT client accepted: $peerName, isConnected=${socket.isConnected}")
-                    BluetoothConnection.set(socket, peerName)
-                    _status.emit("Connected to $peerName")
-
-                    startReading(socket)
+                    acceptAndHandle()
                 }
             } catch (e: Exception) {
                 Log.e(AppConstants.TAG, "BT server error", e)
-                _status.emit("BT server stopped: ${e.message}")
+                _status.emit("Server error: ${e.message}")
             } finally {
                 isRunning = false
             }
         }
     }
 
+    /**
+     * Accept one client and start its reader thread.
+     * Called from the outer while loop — keeps break/continue out of lambdas.
+     */
+    private suspend fun acceptAndHandle() {
+        val socket: BluetoothSocket = try {
+            serverSocket?.accept() ?: return
+        } catch (e: Exception) {
+            if (isRunning) {
+                Log.e(AppConstants.TAG, "accept() failed", e)
+            }
+            return
+        }
+
+        val peerName = try {
+            socket.remoteDevice?.name ?: "Unknown"
+        } catch (_: SecurityException) {
+            "Unknown"
+        }
+
+        Log.i(AppConstants.TAG, "BT server accepted: $peerName")
+        BluetoothConnection.set(socket, peerName)
+        _status.emit("Connected to $peerName")
+        startReading(socket)
+    }
+
     private fun startReading(socket: BluetoothSocket) {
+        readerThread?.interrupt()
         readerThread = Thread {
-            Log.i(AppConstants.TAG, "BT reader thread started")
+            Log.i(AppConstants.TAG, "BT server reader STARTED")
             var reader: BufferedReader? = null
             try {
                 reader = BufferedReader(InputStreamReader(socket.inputStream))
-                while (true) {
+                var running = true
+                while (running) {
                     val line = reader.readLine()
                     if (line == null) {
-                        Log.w(AppConstants.TAG, "BT reader: end of stream")
-                        break
-                    }
-                    if (line.isBlank()) continue
-
-                    Log.i(AppConstants.TAG, "BT raw line: $line")
-
-                    runCatching {
-                        json.decodeFromString(WireMessage.serializer(), line)
-                    }.onSuccess { msg ->
-                        Log.i(AppConstants.TAG, "BT received: ${msg.payload}")
-                        _incoming.tryEmit(msg)
-                    }.onFailure {
-                        Log.e(AppConstants.TAG, "BT parse failed", it)
+                        Log.w(AppConstants.TAG, "BT server: end of stream")
+                        running = false
+                    } else if (line.isNotBlank()) {
+                        runCatching {
+                            json.decodeFromString(WireMessage.serializer(), line)
+                        }.onSuccess { msg ->
+                            Log.i(AppConstants.TAG, "BT server RECEIVED: ${msg.payload}")
+                            _incoming.tryEmit(msg)
+                        }.onFailure {
+                            Log.e(AppConstants.TAG, "BT server parse failed", it)
+                        }
                     }
                 }
             } catch (e: Exception) {
-                Log.e(AppConstants.TAG, "BT read error: ${e.message}", e)
+                if (isRunning) Log.e(AppConstants.TAG, "BT server read error", e)
             } finally {
                 try { reader?.close() } catch (_: Exception) {}
-                try { socket.close() } catch (_: Exception) {}
-                BluetoothConnection.clear()
-                Log.w(AppConstants.TAG, "BT reader thread ended, socket closed")
+                if (isRunning) {
+                    try { socket.close() } catch (_: Exception) {}
+                }
+                Log.w(AppConstants.TAG, "BT server reader ENDED")
             }
         }.also {
             it.isDaemon = true
@@ -143,6 +152,7 @@ class BluetoothServer {
         isRunning = false
         try { serverSocket?.close() } catch (_: Exception) {}
         try { readerThread?.interrupt() } catch (_: Exception) {}
+        try { BluetoothConnection.socket.value?.close() } catch (_: Exception) {}
         BluetoothConnection.clear()
         serverSocket = null
         readerThread = null

@@ -7,19 +7,29 @@ import android.os.Bundle
 import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Bluetooth
+import androidx.compose.material.icons.filled.BluetoothConnected
+import androidx.compose.material.icons.filled.BluetoothSearching
+import androidx.compose.material.icons.filled.CloudOff
+import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.PersonAdd
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -32,6 +42,7 @@ import com.example.itantra.data.model.WireMessage
 import com.example.itantra.data.prefs.Contact
 import com.example.itantra.data.prefs.ContactsStore
 import com.example.itantra.data.prefs.DeviceIdStore
+import com.example.itantra.service.MessageService
 import com.example.itantra.transport.BluetoothConnection
 import com.example.itantra.transport.BluetoothServer
 import com.example.itantra.transport.BluetoothTransport
@@ -61,24 +72,25 @@ class MainActivity : ComponentActivity() {
 
     private val permLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
-    ) { results ->
-        results.forEach { (perm, granted) ->
-            Log.i(AppConstants.TAG, "Permission $perm granted: $granted")
-        }
-    }
+    ) { }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        enableEdgeToEdge()
 
         val perms = mutableListOf(Manifest.permission.RECORD_AUDIO)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             perms.add(Manifest.permission.BLUETOOTH_CONNECT)
             perms.add(Manifest.permission.BLUETOOTH_SCAN)
         }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            perms.add(Manifest.permission.POST_NOTIFICATIONS)
+        }
         permLauncher.launch(perms.toTypedArray())
 
         ServiceLocator.ttsManager.init(this)
+
+        // Start background service so SOS works even when app is closed
+        MessageService.start(this)
 
         myDeviceId = DeviceIdStore.getOrCreateId(this)
         val myName = DeviceIdStore.getName(this).ifBlank { myDeviceId }
@@ -88,37 +100,20 @@ class MainActivity : ComponentActivity() {
 
         server.start(lifecycleScope)
 
-        // --- Wi-Fi incoming ---
         lifecycleScope.launch {
             server.incoming.collect { msg -> handleIncoming(msg) }
         }
-
-        // --- Bluetooth SERVER incoming (this phone was the "Start Listening" side) ---
         lifecycleScope.launch {
-            btServer.incoming.collect { msg ->
-                Log.i(AppConstants.TAG, "BT server incoming: ${msg.payload}")
-                handleIncoming(msg)
-            }
+            btServer.incoming.collect { msg -> handleIncoming(msg) }
         }
-
-        // --- Bluetooth CLIENT incoming (this phone connected to a server) ---
         lifecycleScope.launch {
-            btTransport.incoming.collect { msg ->
-                Log.i(AppConstants.TAG, "BT client incoming: ${msg.payload}")
-                handleIncoming(msg)
-            }
+            btTransport.incoming.collect { msg -> handleIncoming(msg) }
         }
-
         lifecycleScope.launch {
-            btServer.status.collect { s ->
-                Log.i(AppConstants.TAG, "BT status: $s")
-                btStatus.value = s
-            }
+            btServer.status.collect { s -> btStatus.value = s }
         }
-
         lifecycleScope.launch {
             BluetoothConnection.connectedPeer.collect { peer ->
-                Log.i(AppConstants.TAG, "BT peer: $peer")
                 btPeerName.value = peer
                 if (peer == null) btStatus.value = "Not connected"
             }
@@ -136,12 +131,8 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    /**
-     * Updates UI + speaks the message.
-     * All state writes go through runOnUiThread so Compose always picks them up.
-     */
     private fun handleIncoming(msg: WireMessage) {
-        Log.i(AppConstants.TAG, "handleIncoming: '${msg.payload}' from ${msg.from} lang ${msg.lang}")
+        Log.i(AppConstants.TAG, "handleIncoming: '${msg.payload}' priority=${msg.priority}")
         runOnUiThread {
             lastReceived.value = msg.payload
             lastReceivedFrom.value = msg.from
@@ -179,12 +170,9 @@ class MainActivity : ComponentActivity() {
         val recvText by lastReceived
         val recvFrom by lastReceivedFrom
         val recvLang by lastReceivedLang
-
         val btStatusVal by btStatus
         val btPeerVal by btPeerName
-
         var pairedDevices by remember { mutableStateOf<List<BluetoothDevice>>(emptyList()) }
-
         val btConnected = btPeerVal != null
 
         Scaffold(
@@ -198,19 +186,21 @@ class MainActivity : ComponentActivity() {
                                 style = MaterialTheme.typography.titleLarge
                             )
                             Text(
-                                "You: $myName",
-                                style = MaterialTheme.typography.labelMedium
+                                myName,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.85f)
                             )
                         }
                     },
                     actions = {
-                        TextButton(onClick = { showNameDialog = true }) {
-                            Text("Edit name", color = MaterialTheme.colorScheme.onPrimary)
+                        IconButton(onClick = { showNameDialog = true }) {
+                            Icon(Icons.Default.Person, contentDescription = "Edit name")
                         }
                     },
                     colors = TopAppBarDefaults.topAppBarColors(
                         containerColor = MaterialTheme.colorScheme.primary,
-                        titleContentColor = MaterialTheme.colorScheme.onPrimary
+                        titleContentColor = MaterialTheme.colorScheme.onPrimary,
+                        actionIconContentColor = MaterialTheme.colorScheme.onPrimary
                     )
                 )
             }
@@ -221,33 +211,29 @@ class MainActivity : ComponentActivity() {
                     .padding(padding)
                     .verticalScroll(rememberScrollState())
                     .padding(horizontal = 16.dp, vertical = 12.dp),
-                verticalArrangement = Arrangement.spacedBy(14.dp)
+                verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
 
-                // ---- Status ----
-                Card(
+                // ---- STATUS CARD ----
+                ElevatedCard(
                     modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(12.dp),
-                    colors = CardDefaults.cardColors(
+                    colors = CardDefaults.elevatedCardColors(
                         containerColor = if (isListening)
-                            Color(0xFFFFF3E0)
+                            MaterialTheme.colorScheme.tertiaryContainer
                         else
                             MaterialTheme.colorScheme.surfaceVariant
                     )
                 ) {
                     Row(
-                        modifier = Modifier.padding(14.dp),
+                        modifier = Modifier.padding(16.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Box(
-                            modifier = Modifier
-                                .size(12.dp)
-                                .background(
-                                    if (isListening) Color(0xFFFF9800) else Color(0xFF4CAF50),
-                                    shape = CircleShape
-                                )
+                        Icon(
+                            Icons.Default.CloudOff,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary
                         )
-                        Spacer(Modifier.width(10.dp))
+                        Spacer(Modifier.width(12.dp))
                         Column {
                             Text(
                                 "Status",
@@ -262,90 +248,109 @@ class MainActivity : ComponentActivity() {
                             if (liveText.isNotBlank()) {
                                 Spacer(Modifier.height(4.dp))
                                 Text(
-                                    "Hearing: $liveText",
+                                    liveText,
                                     style = MaterialTheme.typography.labelSmall,
-                                    color = Color(0xFF0D47A1)
+                                    color = MaterialTheme.colorScheme.primary
                                 )
                             }
                         }
                     }
                 }
 
-                // ---- Bluetooth ----
+                // ---- BLUETOOTH SECTION ----
                 SectionHeader("Bluetooth")
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(12.dp),
-                    colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.surfaceVariant
-                    )
+                ElevatedCard(
+                    modifier = Modifier.fillMaxWidth()
                 ) {
-                    Column(modifier = Modifier.padding(14.dp)) {
+                    Column(modifier = Modifier.padding(16.dp)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Box(
-                                modifier = Modifier
-                                    .size(10.dp)
-                                    .background(
-                                        if (btConnected) Color(0xFF00C853) else Color(0xFF9E9E9E),
-                                        shape = CircleShape
-                                    )
+                            Icon(
+                                if (btConnected) Icons.Default.BluetoothConnected
+                                else Icons.Default.Bluetooth,
+                                contentDescription = null,
+                                tint = if (btConnected) MaterialTheme.colorScheme.primary
+                                else MaterialTheme.colorScheme.onSurfaceVariant
                             )
-                            Spacer(Modifier.width(8.dp))
+                            Spacer(Modifier.width(10.dp))
                             Text(
                                 btStatusVal,
                                 style = MaterialTheme.typography.bodyMedium,
                                 fontWeight = FontWeight.Medium
                             )
                         }
-                        Spacer(Modifier.height(10.dp))
+                        Spacer(Modifier.height(12.dp))
 
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Button(
+                            OutlinedButton(
                                 onClick = {
-                                    Log.i(AppConstants.TAG, "=== Start Listening tapped ===")
                                     btServer.start(ctx, lifecycleScope)
                                 },
                                 modifier = Modifier.weight(1f)
-                            ) { Text("Start Listening") }
-
+                            ) {
+                                Icon(
+                                    Icons.Default.BluetoothSearching,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Spacer(Modifier.width(6.dp))
+                                Text("Listen")
+                            }
                             OutlinedButton(
                                 onClick = {
                                     pairedDevices = btTransport.listPairedDevices(ctx)
-                                    Log.i(AppConstants.TAG, "Paired: ${pairedDevices.size}")
                                 },
                                 modifier = Modifier.weight(1f)
-                            ) { Text("Refresh Paired") }
+                            ) {
+                                Icon(
+                                    Icons.Default.Refresh,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Spacer(Modifier.width(6.dp))
+                                Text("Paired")
+                            }
                         }
 
                         if (pairedDevices.isNotEmpty()) {
-                            Spacer(Modifier.height(10.dp))
-                            Text("Tap a device to connect:", style = MaterialTheme.typography.labelMedium)
+                            Spacer(Modifier.height(12.dp))
+                            Text(
+                                "Paired Devices",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
                             Spacer(Modifier.height(6.dp))
                             pairedDevices.forEach { device ->
                                 val name = try { device.name } catch (_: SecurityException) { "Unknown" }
-                                Card(
+                                OutlinedCard(
+                                    onClick = {
+                                        lifecycleScope.launch {
+                                            status = "Connecting to $name…"
+                                            val r = btTransport.connect(ctx, device)
+                                            status = if (r.isSuccess) "Connected to $name"
+                                            else "Failed: ${r.exceptionOrNull()?.message}"
+                                        }
+                                    },
                                     modifier = Modifier
                                         .fillMaxWidth()
                                         .padding(vertical = 4.dp)
-                                        .clickable {
-                                            Log.i(AppConstants.TAG, "=== Tapped device: $name ===")
-                                            lifecycleScope.launch {
-                                                status = "Connecting BT to $name…"
-                                                val r = btTransport.connect(ctx, device)
-                                                status = if (r.isSuccess) "BT connected to $name"
-                                                else "BT failed: ${r.exceptionOrNull()?.message}"
-                                            }
-                                        },
-                                    shape = RoundedCornerShape(10.dp)
                                 ) {
                                     Row(
                                         modifier = Modifier.padding(12.dp),
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
-                                        Text("🔵", modifier = Modifier.padding(end = 8.dp))
+                                        Icon(
+                                            Icons.Default.Bluetooth,
+                                            contentDescription = null,
+                                            tint = MaterialTheme.colorScheme.primary
+                                        )
+                                        Spacer(Modifier.width(12.dp))
                                         Column {
-                                            Text(name, fontWeight = FontWeight.SemiBold)
-                                            Text(device.address, style = MaterialTheme.typography.labelSmall)
+                                            Text(name, fontWeight = FontWeight.Medium)
+                                            Text(
+                                                device.address,
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
                                         }
                                     }
                                 }
@@ -353,36 +358,38 @@ class MainActivity : ComponentActivity() {
                         }
 
                         if (btConnected) {
-                            Spacer(Modifier.height(10.dp))
+                            Spacer(Modifier.height(12.dp))
                             OutlinedButton(
                                 onClick = {
                                     btTransport.disconnect()
-                                    status = "BT disconnected"
+                                    status = "Disconnected"
                                 },
                                 modifier = Modifier.fillMaxWidth()
-                            ) { Text("Disconnect") }
+                            ) {
+                                Text("Disconnect")
+                            }
                         }
                     }
                 }
 
-                // ---- Sending-to indicator ----
+                // ---- SENDING TO ----
                 if (selectedContact != null) {
-                    SectionHeader("Sending to")
-                    Card(
+                    SectionHeader("Recipient")
+                    ElevatedCard(
                         modifier = Modifier.fillMaxWidth(),
-                        colors = CardDefaults.cardColors(
+                        colors = CardDefaults.elevatedCardColors(
                             containerColor = MaterialTheme.colorScheme.primaryContainer
-                        ),
-                        shape = RoundedCornerShape(12.dp)
+                        )
                     ) {
                         Row(
-                            modifier = Modifier.padding(14.dp),
+                            modifier = Modifier.padding(16.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Box(
                                 modifier = Modifier
-                                    .size(38.dp)
-                                    .background(MaterialTheme.colorScheme.primary, shape = CircleShape),
+                                    .size(40.dp)
+                                    .clip(CircleShape)
+                                    .background(MaterialTheme.colorScheme.primary),
                                 contentAlignment = Alignment.Center
                             ) {
                                 Text(
@@ -400,7 +407,7 @@ class MainActivity : ComponentActivity() {
                                 )
                                 Text(
                                     selectedContact!!.deviceId,
-                                    style = MaterialTheme.typography.labelSmall
+                                    style = MaterialTheme.typography.bodySmall
                                 )
                             }
                             TextButton(onClick = { selectedContact = null }) {
@@ -409,28 +416,24 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                 } else if (btConnected) {
-                    SectionHeader("Sending to")
-                    Card(
+                    SectionHeader("Recipient")
+                    ElevatedCard(
                         modifier = Modifier.fillMaxWidth(),
-                        colors = CardDefaults.cardColors(
+                        colors = CardDefaults.elevatedCardColors(
                             containerColor = MaterialTheme.colorScheme.primaryContainer
-                        ),
-                        shape = RoundedCornerShape(12.dp)
+                        )
                     ) {
                         Row(
-                            modifier = Modifier.padding(14.dp),
+                            modifier = Modifier.padding(16.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(38.dp)
-                                    .background(MaterialTheme.colorScheme.primary, shape = CircleShape),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Text("🔵", color = MaterialTheme.colorScheme.onPrimary)
-                            }
+                            Icon(
+                                Icons.Default.BluetoothConnected,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary
+                            )
                             Spacer(Modifier.width(12.dp))
-                            Column(Modifier.weight(1f)) {
+                            Column {
                                 Text(
                                     btPeerVal ?: "Bluetooth peer",
                                     style = MaterialTheme.typography.titleMedium,
@@ -438,39 +441,34 @@ class MainActivity : ComponentActivity() {
                                 )
                                 Text(
                                     "via Bluetooth",
-                                    style = MaterialTheme.typography.labelSmall
+                                    style = MaterialTheme.typography.bodySmall
                                 )
                             }
                         }
                     }
-                } else {
-                    Card(
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = CardDefaults.cardColors(
-                            containerColor = Color(0xFFFFF3E0)
-                        ),
-                        shape = RoundedCornerShape(12.dp)
-                    ) {
-                        Text(
-                            "⚠  Select a contact below OR connect Bluetooth to start",
-                            modifier = Modifier.padding(14.dp),
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = Color(0xFFE65100)
-                        )
-                    }
                 }
 
-                // ---- Nearby ----
-                SectionHeader("Nearby devices (Wi-Fi)")
+                // ---- NEARBY ----
+                SectionHeader("Nearby Devices")
                 val others = nearby.filter { it.deviceId != myDeviceId }
                 if (others.isEmpty()) {
-                    Card(modifier = Modifier.fillMaxWidth()) {
-                        Text(
-                            "Searching… (requires Wi-Fi ON)",
-                            modifier = Modifier.padding(14.dp),
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
+                    ElevatedCard(modifier = Modifier.fillMaxWidth()) {
+                        Row(
+                            modifier = Modifier.padding(16.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                Icons.Default.Wifi,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Spacer(Modifier.width(12.dp))
+                            Text(
+                                "Searching…",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
                     }
                 } else {
                     others.forEach { dev ->
@@ -484,13 +482,13 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
-                // ---- Contacts ----
-                SectionHeader("Saved contacts")
+                // ---- CONTACTS ----
+                SectionHeader("Contacts")
                 if (contacts.isEmpty()) {
-                    Card(modifier = Modifier.fillMaxWidth()) {
+                    ElevatedCard(modifier = Modifier.fillMaxWidth()) {
                         Text(
-                            "No saved contacts yet.",
-                            modifier = Modifier.padding(14.dp),
+                            "No contacts saved yet",
+                            modifier = Modifier.padding(16.dp),
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -511,7 +509,7 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
-                // ---- Language ----
+                // ---- LANGUAGE ----
                 SectionHeader("Language")
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Language.entries.forEach { l ->
@@ -523,15 +521,98 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
-                // ---- Mic button ----
-                Card(
+                // ---- SOS BUTTON ----
+                SectionHeader("Emergency")
+                ElevatedCard(
                     modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(20.dp),
-                    colors = CardDefaults.cardColors(
-                        containerColor = if (isListening)
-                            Color(0xFFFFEBEE)
-                        else
-                            MaterialTheme.colorScheme.primaryContainer
+                    colors = CardDefaults.elevatedCardColors(
+                        containerColor = MaterialTheme.colorScheme.errorContainer
+                    )
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Icon(
+                            Icons.Default.Warning,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.size(32.dp)
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            "Send an emergency alert to the selected contact. The receiver's phone will ring, vibrate and show a full-screen alert — even if their app is closed.",
+                            style = MaterialTheme.typography.bodySmall,
+                            textAlign = TextAlign.Center,
+                            color = MaterialTheme.colorScheme.onErrorContainer
+                        )
+                        Spacer(Modifier.height(12.dp))
+                        Button(
+                            onClick = {
+                                val target = selectedContact
+                                if (target == null && !btConnected) {
+                                    status = "Select a contact or connect Bluetooth first"
+                                    return@Button
+                                }
+                                val sosText = if (lastSent.isNotBlank()) lastSent
+                                else "SOS — Emergency. Please respond immediately."
+                                lifecycleScope.launch {
+                                    try {
+                                        val msg = WireMessage(
+                                            from = myDeviceId,
+                                            lang = lang.name,
+                                            payload = sosText,
+                                            priority = "SOS",
+                                            senderName = myName
+                                        )
+                                        val ok = if (btTransport.isConnected()) {
+                                            btTransport.send(msg)
+                                        } else {
+                                            val t = selectedContact
+                                            val ip = if (t != null) resolveIp(t.deviceId, nearby, t) else null
+                                            if (ip != null) {
+                                                transport.connect(ip, AppConstants.DEFAULT_PORT)
+                                                transport.send(msg)
+                                                transport.close()
+                                                true
+                                            } else false
+                                        }
+                                        lastSent = sosText
+                                        lastSentTo = btPeerVal ?: selectedContact?.name ?: "peer"
+                                        status = if (ok) "SOS SENT" else "SOS send failed"
+                                    } catch (e: Exception) {
+                                        Log.e(AppConstants.TAG, "SOS send failed", e)
+                                        status = "SOS error: ${e.message}"
+                                    }
+                                }
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(64.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = MaterialTheme.colorScheme.error,
+                                contentColor = MaterialTheme.colorScheme.onError
+                            ),
+                            shape = RoundedCornerShape(32.dp)
+                        ) {
+                            Icon(Icons.Default.Warning, contentDescription = null)
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                "SEND SOS",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+                }
+
+                // ---- TALK BUTTON ----
+                ElevatedCard(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.elevatedCardColors(
+                        containerColor = MaterialTheme.colorScheme.primaryContainer
                     )
                 ) {
                     Column(
@@ -542,9 +623,6 @@ class MainActivity : ComponentActivity() {
                     ) {
                         FilledIconButton(
                             onClick = {
-                                Log.i(AppConstants.TAG, "=== Mic tapped ===")
-                                Log.i(AppConstants.TAG, "selectedContact=$selectedContact, btConnected=$btConnected, isListening=$isListening")
-
                                 if (isListening) {
                                     ServiceLocator.voskSttManager.stop()
                                     isListening = false
@@ -553,20 +631,20 @@ class MainActivity : ComponentActivity() {
                                     return@FilledIconButton
                                 }
 
-                                if (selectedContact == null && !btConnected) {
-                                    status = "⚠ Select a contact OR connect Bluetooth first"
+                                val target = selectedContact
+                                if (target == null && !btConnected) {
+                                    status = "Select a contact or connect Bluetooth"
                                     return@FilledIconButton
                                 }
 
                                 isListening = true
                                 liveText = ""
-                                status = "Loading ${lang.display} model…"
+                                status = "Listening in ${lang.display}…"
 
                                 ServiceLocator.voskSttManager.start(
                                     context = ctx,
                                     lang = lang,
                                     onResult = { text ->
-                                        Log.i(AppConstants.TAG, "Vosk result: $text")
                                         isListening = false
                                         liveText = ""
                                         status = "Ready"
@@ -578,26 +656,29 @@ class MainActivity : ComponentActivity() {
                                                     val msg = WireMessage(
                                                         from = myDeviceId,
                                                         lang = lang.name,
-                                                        payload = text
+                                                        payload = text,
+                                                        priority = "NORMAL",
+                                                        senderName = myName
                                                     )
-                                                    val target = selectedContact
-                                                    if (btTransport.isConnected()) {
-                                                        val ok = btTransport.send(msg)
-                                                        lastSentTo = btPeerVal ?: "peer"
-                                                        status = if (ok) "Sent via Bluetooth"
-                                                        else "Send failed"
-                                                    } else if (target != null) {
-                                                        val ip = resolveIp(target.deviceId, nearby, target)
+                                                    val ok = if (btTransport.isConnected()) {
+                                                        btTransport.send(msg)
+                                                    } else {
+                                                        val t = selectedContact
+                                                        val ip = if (t != null)
+                                                            resolveIp(t.deviceId, nearby, t)
+                                                        else null
                                                         if (ip != null) {
                                                             transport.connect(ip, AppConstants.DEFAULT_PORT)
                                                             transport.send(msg)
                                                             transport.close()
-                                                            lastSentTo = target.name
-                                                            status = "Sent to ${target.name}"
-                                                        } else {
-                                                            status = "Contact offline"
-                                                        }
+                                                            true
+                                                        } else false
                                                     }
+                                                    lastSentTo = btPeerVal ?: selectedContact?.name ?: "peer"
+                                                    status = if (ok) {
+                                                        if (btTransport.isConnected()) "Sent via Bluetooth"
+                                                        else "Sent to ${selectedContact?.name}"
+                                                    } else "Send failed"
                                                 } catch (e: Exception) {
                                                     Log.e(AppConstants.TAG, "send failed", e)
                                                     status = "Send error: ${e.message}"
@@ -610,14 +691,13 @@ class MainActivity : ComponentActivity() {
                                         status = "Hearing…"
                                     },
                                     onError = { err ->
-                                        Log.e(AppConstants.TAG, "Vosk error: $err")
                                         isListening = false
                                         liveText = ""
-                                        status = "STT: $err"
+                                        status = err
                                     }
                                 )
                             },
-                            modifier = Modifier.size(110.dp),
+                            modifier = Modifier.size(96.dp),
                             colors = IconButtonDefaults.filledIconButtonColors(
                                 containerColor = if (isListening)
                                     MaterialTheme.colorScheme.error
@@ -625,49 +705,50 @@ class MainActivity : ComponentActivity() {
                                     MaterialTheme.colorScheme.primary
                             )
                         ) {
-                            Text(
-                                if (isListening) "⏹" else "🎤",
-                                style = MaterialTheme.typography.displayMedium
+                            Icon(
+                                Icons.Default.Mic,
+                                contentDescription = "Push to talk",
+                                modifier = Modifier.size(40.dp)
                             )
                         }
-                        Spacer(Modifier.height(14.dp))
+                        Spacer(Modifier.height(12.dp))
                         Text(
                             when {
                                 isListening -> "Listening… tap to stop"
-                                selectedContact == null && !btConnected -> "Select contact or connect BT"
+                                selectedContact == null && !btConnected -> "Select a contact first"
                                 else -> "Tap to speak"
                             },
                             style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.SemiBold,
+                            fontWeight = FontWeight.Medium,
                             textAlign = TextAlign.Center
                         )
                         Spacer(Modifier.height(4.dp))
                         Text(
                             if (btTransport.isConnected()) "Mode: Bluetooth"
                             else "Mode: Wi-Fi",
-                            style = MaterialTheme.typography.labelSmall,
+                            style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
                 }
 
-                // ---- Last sent ----
+                // ---- LAST SENT ----
                 if (lastSent.isNotBlank()) {
-                    SectionHeader("Last sent")
+                    SectionHeader("Last Sent")
                     MessageBubble(
-                        header = "You → ${lastSentTo.ifBlank { selectedContact?.name ?: btPeerVal ?: "peer" }}",
-                        subtitle = "${lang.display}  •  " + if (btTransport.isConnected()) "BT" else "Wi-Fi",
+                        header = "You → ${lastSentTo}",
+                        subtitle = lang.display,
                         text = lastSent,
                         outgoing = true
                     )
                 }
 
-                // ---- Last received ----
+                // ---- LAST RECEIVED ----
                 if (recvText.isNotBlank()) {
-                    SectionHeader("Last received")
+                    SectionHeader("Last Received")
                     MessageBubble(
-                        header = "From: ${friendlyName(recvFrom, contacts)}",
-                        subtitle = "$recvLang  •  " + if (btTransport.isConnected()) "BT" else "Wi-Fi",
+                        header = friendlyName(recvFrom, contacts),
+                        subtitle = recvLang,
                         text = recvText,
                         outgoing = false
                     )
@@ -682,7 +763,9 @@ class MainActivity : ComponentActivity() {
                             },
                             modifier = Modifier.fillMaxWidth()
                         ) {
-                            Text("➕ Save ${friendlyName(recvFrom, contacts)} as contact")
+                            Icon(Icons.Default.PersonAdd, contentDescription = null)
+                            Spacer(Modifier.width(8.dp))
+                            Text("Save ${friendlyName(recvFrom, contacts)}")
                         }
                     }
                 }
@@ -690,11 +773,11 @@ class MainActivity : ComponentActivity() {
                 Spacer(Modifier.height(24.dp))
             }
 
-            // ---- Dialogs ----
+            // ---- DIALOGS ----
             if (showNameDialog) {
                 AlertDialog(
                     onDismissRequest = { showNameDialog = false },
-                    title = { Text("Your display name") },
+                    title = { Text("Your Display Name") },
                     text = {
                         OutlinedTextField(
                             value = myName,
@@ -722,11 +805,12 @@ class MainActivity : ComponentActivity() {
             if (saving != null) {
                 AlertDialog(
                     onDismissRequest = { showSaveContactDialog = null },
-                    title = { Text("Save ${saving.displayName}") },
+                    title = { Text("Save Contact") },
                     text = {
                         Column {
-                            Text("Device: ${saving.deviceId}", style = MaterialTheme.typography.labelMedium)
-                            Spacer(Modifier.height(8.dp))
+                            Text("Device: ${saving.deviceId}",
+                                style = MaterialTheme.typography.bodySmall)
+                            Spacer(Modifier.height(12.dp))
                             OutlinedTextField(
                                 value = saveName,
                                 onValueChange = { saveName = it },
@@ -754,11 +838,12 @@ class MainActivity : ComponentActivity() {
             if (senderId != null) {
                 AlertDialog(
                     onDismissRequest = { showSaveSenderDialog = null },
-                    title = { Text("Save sender") },
+                    title = { Text("Save Sender") },
                     text = {
                         Column {
-                            Text("Device: $senderId", style = MaterialTheme.typography.labelMedium)
-                            Spacer(Modifier.height(8.dp))
+                            Text("Device: $senderId",
+                                style = MaterialTheme.typography.bodySmall)
+                            Spacer(Modifier.height(12.dp))
                             OutlinedTextField(
                                 value = saveName,
                                 onValueChange = { saveName = it },
@@ -798,43 +883,39 @@ class MainActivity : ComponentActivity() {
     }
 
     @Composable
-    private fun SectionHeader(t: String) {
+    private fun SectionHeader(title: String) {
         Text(
-            t.uppercase(),
+            title.uppercase(),
             style = MaterialTheme.typography.labelLarge,
             color = MaterialTheme.colorScheme.primary,
-            fontWeight = FontWeight.Bold
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.padding(top = 8.dp)
         )
     }
 
     @Composable
     private fun NearbyDeviceRow(device: DiscoveredDevice, onSave: () -> Unit) {
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(12.dp)
+        ElevatedCard(
+            modifier = Modifier.fillMaxWidth()
         ) {
             Row(
-                modifier = Modifier.padding(12.dp),
+                modifier = Modifier.padding(16.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Box(
-                    modifier = Modifier
-                        .size(36.dp)
-                        .background(Color(0xFFE3F2FD), shape = CircleShape),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text("📡")
-                }
+                Icon(
+                    Icons.Default.Wifi,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary
+                )
                 Spacer(Modifier.width(12.dp))
-                Column(modifier = Modifier.padding(end = 8.dp)) {
-                    Text(device.displayName, fontWeight = FontWeight.SemiBold)
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(device.displayName, fontWeight = FontWeight.Medium)
                     Text(
                         device.deviceId,
-                        style = MaterialTheme.typography.labelSmall,
+                        style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-                Spacer(Modifier.weight(1f))
                 TextButton(onClick = onSave) { Text("Save") }
             }
         }
@@ -847,44 +928,48 @@ class MainActivity : ComponentActivity() {
         onSelect: () -> Unit,
         onDelete: () -> Unit
     ) {
-        Card(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clickable { onSelect() },
-            shape = RoundedCornerShape(12.dp),
-            colors = CardDefaults.cardColors(
+        ElevatedCard(
+            onClick = onSelect,
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.elevatedCardColors(
                 containerColor = if (isSelected)
                     MaterialTheme.colorScheme.primaryContainer
                 else
-                    MaterialTheme.colorScheme.surfaceVariant
+                    MaterialTheme.colorScheme.surface
             )
         ) {
             Row(
-                modifier = Modifier.padding(12.dp),
+                modifier = Modifier.padding(16.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Box(
                     modifier = Modifier
-                        .size(38.dp)
-                        .background(MaterialTheme.colorScheme.primary, shape = CircleShape),
+                        .size(40.dp)
+                        .clip(CircleShape)
+                        .background(
+                            if (isSelected) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.surfaceVariant
+                        ),
                     contentAlignment = Alignment.Center
                 ) {
                     Text(
                         contact.name.take(1).uppercase(),
-                        color = MaterialTheme.colorScheme.onPrimary,
+                        color = if (isSelected)
+                            MaterialTheme.colorScheme.onPrimary
+                        else
+                            MaterialTheme.colorScheme.onSurfaceVariant,
                         fontWeight = FontWeight.Bold
                     )
                 }
                 Spacer(Modifier.width(12.dp))
-                Column(modifier = Modifier.padding(end = 8.dp)) {
-                    Text(contact.name, fontWeight = FontWeight.SemiBold)
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(contact.name, fontWeight = FontWeight.Medium)
                     Text(
                         contact.deviceId,
-                        style = MaterialTheme.typography.labelSmall,
+                        style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-                Spacer(Modifier.weight(1f))
                 TextButton(onClick = onDelete) { Text("Remove") }
             }
         }
@@ -897,23 +982,25 @@ class MainActivity : ComponentActivity() {
         text: String,
         outgoing: Boolean
     ) {
-        Card(
+        ElevatedCard(
             modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(14.dp),
-            colors = CardDefaults.cardColors(
-                containerColor = if (outgoing) Color(0xFFDCE9FF) else Color(0xFFE8F5E9)
+            colors = CardDefaults.elevatedCardColors(
+                containerColor = if (outgoing)
+                    MaterialTheme.colorScheme.primaryContainer
+                else
+                    MaterialTheme.colorScheme.secondaryContainer
             )
         ) {
-            Column(modifier = Modifier.padding(14.dp)) {
+            Column(modifier = Modifier.padding(16.dp)) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
                         header,
                         style = MaterialTheme.typography.labelLarge,
-                        fontWeight = FontWeight.SemiBold,
-                        color = if (outgoing) Color(0xFF0D47A1) else Color(0xFF1B5E20)
+                        fontWeight = FontWeight.SemiBold
                     )
                     Text(
                         subtitle,
@@ -921,7 +1008,7 @@ class MainActivity : ComponentActivity() {
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-                Spacer(Modifier.height(6.dp))
+                Spacer(Modifier.height(8.dp))
                 Text(text, style = MaterialTheme.typography.bodyLarge)
             }
         }

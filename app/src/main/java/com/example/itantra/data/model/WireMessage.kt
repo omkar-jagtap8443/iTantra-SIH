@@ -9,5 +9,7 @@ data class WireMessage(
     val from: String,
     val lang: String,
     val payload: String,
+    val priority: String = "NORMAL",  // "NORMAL", "URGENT", "SOS"
+    val senderName: String = "",
     val ts: Long = System.currentTimeMillis()
 )

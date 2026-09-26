@@ -30,6 +30,9 @@ class BluetoothTransport {
 
     private var readerThread: Thread? = null
 
+    @Volatile
+    private var isRunning = false
+
     @SuppressLint("MissingPermission")
     fun listPairedDevices(context: Context): List<BluetoothDevice> {
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT)
@@ -55,7 +58,7 @@ class BluetoothTransport {
                     device.createInsecureRfcommSocketToServiceRecord(AppConstants.BT_UUID)
                 }
 
-                Log.i(AppConstants.TAG, "BT client: attempting connect to ${device.address}")
+                Log.i(AppConstants.TAG, "BT client: connecting to ${device.address}")
                 socket.connect()
                 Log.i(AppConstants.TAG, "BT client: connected, isConnected=${socket.isConnected}")
 
@@ -64,8 +67,6 @@ class BluetoothTransport {
                 } catch (_: SecurityException) { "Unknown" }
 
                 BluetoothConnection.set(socket, peerName)
-
-                // CRITICAL: start client-side reader
                 startReader(socket)
 
                 Result.success(peerName)
@@ -76,41 +77,41 @@ class BluetoothTransport {
         }
 
     /**
-     * Reads WireMessages from the client-side socket.
-     * Without this, the client (Samsung) can send but cannot receive.
+     * Client-side reader thread. Reads incoming messages from the server.
+     * Note: no `break` or `continue` — uses a running flag instead.
      */
     private fun startReader(socket: BluetoothSocket) {
         readerThread?.interrupt()
+        isRunning = true
         readerThread = Thread {
-            Log.i(AppConstants.TAG, "BT client reader thread STARTED")
+            Log.i(AppConstants.TAG, "BT client reader STARTED")
             var reader: BufferedReader? = null
             try {
                 reader = BufferedReader(InputStreamReader(socket.inputStream))
-                while (true) {
+                var running = true
+                while (running) {
                     val line = reader.readLine()
                     if (line == null) {
-                        Log.w(AppConstants.TAG, "BT client reader: end of stream")
-                        break
-                    }
-                    if (line.isBlank()) continue
-
-                    Log.i(AppConstants.TAG, "BT client raw: $line")
-
-                    runCatching {
-                        json.decodeFromString(WireMessage.serializer(), line)
-                    }.onSuccess { msg ->
-                        Log.i(AppConstants.TAG, "BT client RECEIVED: ${msg.payload}")
-                        _incoming.tryEmit(msg)
-                    }.onFailure {
-                        Log.e(AppConstants.TAG, "BT client parse failed", it)
+                        Log.w(AppConstants.TAG, "BT client: end of stream")
+                        running = false
+                    } else if (line.isNotBlank()) {
+                        runCatching {
+                            json.decodeFromString(WireMessage.serializer(), line)
+                        }.onSuccess { msg ->
+                            Log.i(AppConstants.TAG, "BT client RECEIVED: ${msg.payload}")
+                            _incoming.tryEmit(msg)
+                        }.onFailure {
+                            Log.e(AppConstants.TAG, "BT client parse failed", it)
+                        }
                     }
                 }
             } catch (e: Exception) {
-                Log.e(AppConstants.TAG, "BT client read error", e)
+                if (isRunning) Log.e(AppConstants.TAG, "BT client read error", e)
             } finally {
                 try { reader?.close() } catch (_: Exception) {}
-                try { socket.close() } catch (_: Exception) {}
-                BluetoothConnection.clear()
+                if (isRunning) {
+                    try { socket.close() } catch (_: Exception) {}
+                }
                 Log.w(AppConstants.TAG, "BT client reader ENDED")
             }
         }.also {
@@ -123,29 +124,26 @@ class BluetoothTransport {
         withContext(Dispatchers.IO) {
             try {
                 val socket = BluetoothConnection.socket.value
-                if (socket == null) {
-                    Log.w(AppConstants.TAG, "BT send: no socket")
+                if (socket == null || !socket.isConnected) {
+                    Log.w(AppConstants.TAG, "BT send: socket not ready")
                     return@withContext false
                 }
-                if (!socket.isConnected) {
-                    Log.w(AppConstants.TAG, "BT send: socket not connected")
-                    return@withContext false
-                }
-
                 val writer = PrintWriter(OutputStreamWriter(socket.outputStream), true)
                 val line = json.encodeToString(WireMessage.serializer(), message)
                 writer.println(line)
                 writer.flush()
-                Log.i(AppConstants.TAG, "BT SENT: ${message.payload}")
+                Log.i(AppConstants.TAG, "BT client SENT: ${message.payload}")
                 true
             } catch (e: Exception) {
-                Log.e(AppConstants.TAG, "BT send failed", e)
+                Log.e(AppConstants.TAG, "BT client send failed", e)
                 false
             }
         }
 
     fun disconnect() {
+        isRunning = false
         try { readerThread?.interrupt() } catch (_: Exception) {}
+        try { BluetoothConnection.socket.value?.close() } catch (_: Exception) {}
         BluetoothConnection.clear()
         readerThread = null
     }
