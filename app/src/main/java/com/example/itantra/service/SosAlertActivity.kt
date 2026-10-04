@@ -45,6 +45,8 @@ class SosAlertActivity : ComponentActivity() {
     private var senderId: String = "Unknown"
     private var messageText: String = ""
     private var messageLang: String = "ENGLISH"
+    private var speechLang: String = "ENGLISH"
+    private var sosSessionId: Long = 0L
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -71,6 +73,8 @@ class SosAlertActivity : ComponentActivity() {
         senderId = intent.getStringExtra("sender_id") ?: "Unknown"
         messageText = intent.getStringExtra("message") ?: ""
         messageLang = intent.getStringExtra("lang") ?: "ENGLISH"
+        speechLang = intent.getStringExtra("speech_lang") ?: messageLang
+        sosSessionId = intent.getLongExtra("sos_session_id", 0L)
 
         Log.i(AppConstants.TAG, "SosAlertActivity: from $senderName — $messageText")
 
@@ -135,13 +139,16 @@ class SosAlertActivity : ComponentActivity() {
     }
 
     private fun acknowledge() {
+        if (sosSessionId != 0L) {
+            MessageService.dismissSosSession(sosSessionId)
+        }
         stopAlerts()
         // Speak the message via TTS
         lifecycleScope.launch {
             try {
                 ServiceLocator.ttsManager.speak(
                     "SOS from $senderName. $messageText",
-                    Language.fromTag(messageLang)
+                    Language.fromTag(speechLang)
                 )
             } catch (_: Exception) {}
         }
@@ -154,6 +161,9 @@ class SosAlertActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        if (sosSessionId != 0L) {
+            MessageService.dismissSosSession(sosSessionId)
+        }
         stopAlerts()
         super.onDestroy()
     }

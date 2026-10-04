@@ -42,6 +42,7 @@ import com.example.itantra.data.model.WireMessage
 import com.example.itantra.data.prefs.Contact
 import com.example.itantra.data.prefs.ContactsStore
 import com.example.itantra.data.prefs.DeviceIdStore
+import com.example.itantra.data.prefs.TranslationPrefs
 import com.example.itantra.service.MessageService
 import com.example.itantra.transport.BluetoothConnection
 import com.example.itantra.transport.BluetoothServer
@@ -51,6 +52,7 @@ import com.example.itantra.transport.DiscoveryService
 import com.example.itantra.transport.LocalTcpTransport
 import com.example.itantra.transport.TcpServer
 import com.example.itantra.ui.theme.ITantraTheme
+import com.example.itantra.translation.TranslationOutcome
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
@@ -72,7 +74,15 @@ class MainActivity : ComponentActivity() {
 
     private val permLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
-    ) { }
+    ) { permissions ->
+        val bluetoothPermissionGranted =
+            Build.VERSION.SDK_INT < Build.VERSION_CODES.S ||
+                permissions[Manifest.permission.BLUETOOTH_CONNECT] == true
+
+        if (bluetoothPermissionGranted) {
+            MessageService.start(this)
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -133,13 +143,41 @@ class MainActivity : ComponentActivity() {
 
     private fun handleIncoming(msg: WireMessage) {
         Log.i(AppConstants.TAG, "handleIncoming: '${msg.payload}' priority=${msg.priority}")
-        runOnUiThread {
-            lastReceived.value = msg.payload
-            lastReceivedFrom.value = msg.from
-            lastReceivedLang.value = Language.fromTag(msg.lang).display
-        }
+        val sourceLanguage = Language.fromTag(msg.lang)
+        val targetLanguage = TranslationPrefs.getTargetLanguage(this)
+
         lifecycleScope.launch {
-            ServiceLocator.ttsManager.speak(msg.payload, Language.fromTag(msg.lang))
+            when (val outcome = ServiceLocator.translationEngine.translate(
+                text = msg.payload,
+                sourceLanguage = sourceLanguage,
+                targetLanguage = targetLanguage,
+            )) {
+                is TranslationOutcome.Success -> {
+                    runOnUiThread {
+                        lastReceived.value = outcome.translatedText
+                        lastReceivedFrom.value = msg.from
+                        lastReceivedLang.value = if (sourceLanguage == targetLanguage) {
+                            sourceLanguage.display
+                        } else {
+                            "${sourceLanguage.display} → ${targetLanguage.display}"
+                        }
+                    }
+                    ServiceLocator.ttsManager.speak(outcome.translatedText, targetLanguage)
+                }
+
+                is TranslationOutcome.Failure -> {
+                    Log.w(
+                        AppConstants.TAG,
+                        "Translation failed ${sourceLanguage.name} -> ${targetLanguage.name}: ${outcome.reason}"
+                    )
+                    runOnUiThread {
+                        lastReceived.value = msg.payload
+                        lastReceivedFrom.value = msg.from
+                        lastReceivedLang.value = "${sourceLanguage.display} → ${targetLanguage.display} (translation unavailable)"
+                    }
+                    ServiceLocator.ttsManager.speak(msg.payload, sourceLanguage)
+                }
+            }
         }
     }
 
@@ -160,7 +198,7 @@ class MainActivity : ComponentActivity() {
         var contacts by remember { mutableStateOf(ContactsStore.load(ctx).toList()) }
         var selectedContact by remember { mutableStateOf<Contact?>(null) }
 
-        var lang by remember { mutableStateOf(Language.HINDI) }
+        var lang by remember { mutableStateOf(TranslationPrefs.getTargetLanguage(ctx)) }
         var status by remember { mutableStateOf("Ready") }
         var lastSent by remember { mutableStateOf("") }
         var lastSentTo by remember { mutableStateOf("") }
@@ -515,7 +553,10 @@ class MainActivity : ComponentActivity() {
                     Language.entries.forEach { l ->
                         FilterChip(
                             selected = lang == l,
-                            onClick = { lang = l },
+                            onClick = {
+                                lang = l
+                                TranslationPrefs.setTargetLanguage(ctx, l)
+                            },
                             label = { Text(l.display) }
                         )
                     }

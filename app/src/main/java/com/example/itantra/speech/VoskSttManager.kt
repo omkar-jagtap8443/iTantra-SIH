@@ -132,6 +132,10 @@ class VoskSttManager {
         release()
 
         val assetName = assetNameFor(lang)
+        if (assetName == null) {
+            onError("Offline STT model not available for ${lang.display}")
+            return
+        }
         val destFolder = "vosk-${lang.name.lowercase()}"
 
         Log.i(AppConstants.TAG, "Loading Vosk model: $assetName")
@@ -161,11 +165,12 @@ class VoskSttManager {
         )
     }
 
-    private fun assetNameFor(lang: Language): String = when (lang) {
+    private fun assetNameFor(lang: Language): String? = when (lang) {
         Language.ENGLISH -> "vosk-model-small-en-in-0.4"
         Language.HINDI -> "vosk-model-small-hi-0.22"
         Language.GUJARATI -> "vosk-model-small-gu-0.42"
         Language.TELUGU -> "vosk-model-small-te-0.42"
+        Language.MARATHI -> null
     }
 
     private fun extractText(json: String): String {

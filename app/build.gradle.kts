@@ -84,6 +84,9 @@ dependencies {
     implementation("com.alphacephei:vosk-android:0.3.47")
     implementation("net.java.dev.jna:jna:5.13.0@aar")
 
+    // On-device translation models downloaded by ML Kit
+    implementation("com.google.mlkit:translate:17.0.3")
+
     // Tests
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
